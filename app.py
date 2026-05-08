@@ -100,15 +100,25 @@ active_sessions: Dict[str, dict] = {}
 # TRACKING DE GAIDS EM TEMPO REAL
 # =============================================================================
 
-# Mapeia socket_id -> gaid
-connected_clients: Dict[str, str] = {}
+# Mapeia socket_id -> lista de gaids
+connected_clients: Dict[str, List[str]] = {}
 # Conjunto de GAIDs ativos (com sessões rodando)
 active_gaids: Dict[str, dict] = {}  # gaid -> {"connections": set(), "started_at": datetime, "sessions_running": int}
 
 
+def get_all_unique_gaids() -> set:
+    """Retorna todos os GAIDs únicos conectados."""
+    gaids = set()
+    for gaid_list in connected_clients.values():
+        for g in gaid_list:
+            if g:
+                gaids.add(g)
+    return gaids
+
+
 def get_online_stats() -> dict:
     """Retorna estatísticas de usuários online."""
-    unique_gaids = set(g for g in connected_clients.values() if g)
+    unique_gaids = get_all_unique_gaids()
     running_gaids = set(g for g, info in active_gaids.items() if info.get('sessions_running', 0) > 0)
     return {
         'total_connections': len(connected_clients),
@@ -477,38 +487,44 @@ def api_stats():
 @socketio.on('connect')
 def handle_connect():
     """Quando um cliente conecta via WebSocket."""
-    connected_clients[request.sid] = ''
+    connected_clients[request.sid] = []
     broadcast_stats()
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Quando um cliente desconecta."""
-    gaid = connected_clients.pop(request.sid, '')
-    if gaid and gaid in active_gaids:
-        active_gaids[gaid]['connections'].discard(request.sid)
-        if not active_gaids[gaid]['connections']:
-            del active_gaids[gaid]
+    old_gaids = connected_clients.pop(request.sid, [])
+    for gaid in old_gaids:
+        if gaid and gaid in active_gaids:
+            active_gaids[gaid]['connections'].discard(request.sid)
+            if not active_gaids[gaid]['connections'] and active_gaids[gaid]['sessions_running'] <= 0:
+                del active_gaids[gaid]
     broadcast_stats()
 
 
 @socketio.on('register_gaid')
 def handle_register_gaid(data):
-    """Quando um cliente registra seu GAID."""
-    gaid = data.get('gaid', '').strip()
-    if gaid:
-        old_gaid = connected_clients.get(request.sid, '')
-        # Remover do GAID antigo se mudou
-        if old_gaid and old_gaid != gaid and old_gaid in active_gaids:
-            active_gaids[old_gaid]['connections'].discard(request.sid)
-            if not active_gaids[old_gaid]['connections']:
-                del active_gaids[old_gaid]
-        
-        connected_clients[request.sid] = gaid
+    """Quando um cliente registra seus GAIDs (pode ser múltiplos separados por vírgula)."""
+    raw = data.get('gaid', '').strip()
+    new_gaids = [g.strip() for g in raw.split(',') if g.strip()]
+    
+    # Remover GAIDs antigos desta conexão
+    old_gaids = connected_clients.get(request.sid, [])
+    for gaid in old_gaids:
+        if gaid not in new_gaids and gaid in active_gaids:
+            active_gaids[gaid]['connections'].discard(request.sid)
+            if not active_gaids[gaid]['connections'] and active_gaids[gaid]['sessions_running'] <= 0:
+                del active_gaids[gaid]
+    
+    # Registrar novos GAIDs
+    connected_clients[request.sid] = new_gaids
+    for gaid in new_gaids:
         if gaid not in active_gaids:
             active_gaids[gaid] = {'connections': set(), 'started_at': datetime.now(), 'sessions_running': 0}
         active_gaids[gaid]['connections'].add(request.sid)
-        broadcast_stats()
+    
+    broadcast_stats()
 
 
 # =============================================================================
