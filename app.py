@@ -358,22 +358,37 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             })
         else:
             msg = result.get("msg", "Unknown error")
+            gaid_short = gaid[:8] + '...'
             socketio.emit('session_update', {
                 'session_id': session_id,
                 'session_num': session_num,
                 'type': 'error',
                 'current': i + 1,
                 'total': count,
-                'message': f'[{i+1}/{count}] ERRO: {msg}',
+                'gaid_short': gaid_short,
+                'message': f'[{i+1}/{count}] ERRO ({gaid_short}): {msg}',
             })
             if "limit" in msg.lower() or "restrict" in msg.lower():
                 socketio.emit('session_update', {
                     'session_id': session_id,
                     'session_num': session_num,
                     'type': 'limit',
-                    'message': 'Limite atingido. Sessão encerrada.',
+                    'gaid_short': gaid_short,
+                    'message': f'Limite atingido para GAID {gaid_short}. Sessão encerrada.',
                 })
                 break
+            
+            # Se "Access too fast", aplicar backoff extra
+            if "access too fast" in msg.lower() or "too fast" in msg.lower():
+                backoff = delay * 2 if delay > 0 else 15
+                socketio.emit('session_update', {
+                    'session_id': session_id,
+                    'session_num': session_num,
+                    'type': 'warning',
+                    'message': f'GAID {gaid_short}: Requisições muito rápidas! Aguardando {backoff:.0f}s antes de tentar novamente...',
+                })
+                time.sleep(backoff)
+                continue
         
         if i < count - 1 and delay > 0:
             time.sleep(delay)

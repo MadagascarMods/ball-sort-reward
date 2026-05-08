@@ -1044,6 +1044,9 @@
                 case 'error':
                     addLog('error', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
                     break;
+                case 'warning':
+                    addLog('warning', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
+                    break;
                 case 'limit':
                     addLog('warning', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
                     break;
