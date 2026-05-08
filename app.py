@@ -20,9 +20,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, abort, make_response
 from flask_socketio import SocketIO, emit
 import requests as http_requests
+import re
 
 # =============================================================================
 # CONFIGURAÇÃO
@@ -49,6 +50,48 @@ AD_NETWORKS = ["Unity Ads", "Google AdMob"]
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'ball-sort-secret-key-2025'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+
+# =============================================================================
+# ANTI-SCRAPING / ANTI-BOT MIDDLEWARE
+# =============================================================================
+
+# Known scraper/bot user-agent patterns
+BLOCKED_BOTS = [
+    'httrack', 'wget', 'curl', 'scrapy', 'python-requests', 'java',
+    'libwww', 'lwp', 'urllib', 'httpunit', 'nutch', 'phpcrawl',
+    'msnbot', 'dotbot', 'archive.org', 'saveweb', 'webzip',
+    'teleport', 'webcopy', 'offline', 'mirror', 'grab', 'sitesucker',
+    'cyotek', 'copier', 'collector', 'webripper', 'sitesnagger',
+    'blackwidow', 'xaldon', 'zeus', 'webdownloader', 'backstreet',
+]
+
+@app.before_request
+def block_scrapers():
+    """Bloqueia scrapers, bots e ferramentas de download de sites."""
+    ua = (request.headers.get('User-Agent', '') or '').lower()
+    
+    # Bloquear bots conhecidos
+    for bot in BLOCKED_BOTS:
+        if bot in ua:
+            abort(403)
+    
+    # Bloquear se não tiver User-Agent
+    if not ua or len(ua) < 10:
+        abort(403)
+
+
+@app.after_request
+def add_security_headers(response):
+    """Adiciona headers de segurança anti-scraping."""
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive, nosnippet, noimageindex'
+    response.headers['Content-Security-Policy'] = "frame-ancestors 'none';"
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Permissions-Policy'] = 'interest-cohort=()'
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    return response
 
 # Armazenar sessões ativas
 active_sessions: Dict[str, dict] = {}
@@ -312,6 +355,11 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
 # =============================================================================
 # ROTAS
 # =============================================================================
+
+@app.route('/robots.txt')
+def robots():
+    return app.send_static_file('robots.txt')
+
 
 @app.route('/')
 def index():
