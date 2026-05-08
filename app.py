@@ -261,7 +261,7 @@ def fetch_proxy_list() -> List[str]:
     return proxies
 
 
-def get_proxy() -> Optional[str]:
+def get_new_proxy() -> Optional[str]:
     """Retorna um proxy aleatório da lista, atualizando se necessário."""
     global proxy_list, proxy_last_update
     
@@ -275,12 +275,23 @@ def get_proxy() -> Optional[str]:
     return None
 
 
+# Mapeia session_id -> proxy atual (sticky proxy por sessão)
+session_proxies: Dict[str, Optional[str]] = {}
+
+
+def get_session_proxy(session_id: str, force_rotate: bool = False) -> Optional[str]:
+    """Retorna o proxy fixo da sessão. Só troca se force_rotate=True."""
+    if force_rotate or session_id not in session_proxies:
+        session_proxies[session_id] = get_new_proxy()
+    return session_proxies.get(session_id)
+
+
 # =============================================================================
 # API FUNCTIONS
 # =============================================================================
 
-def api_post(endpoint: str, payload: dict, timeout: int = 20, use_proxy: bool = True) -> dict:
-    """Envia POST para a API e retorna a resposta JSON. Usa proxy dinâmico."""
+def api_post(endpoint: str, payload: dict, timeout: int = 20, session_id: Optional[str] = None, force_rotate: bool = False) -> dict:
+    """Envia POST para a API. Usa proxy sticky por sessão (só troca no erro)."""
     url = BASE_URL + endpoint
     headers = {
         "Accept-Encoding": "identity",
@@ -289,30 +300,24 @@ def api_post(endpoint: str, payload: dict, timeout: int = 20, use_proxy: bool = 
     }
     
     proxies = None
-    if use_proxy:
-        proxy_url = get_proxy()
+    if session_id:
+        proxy_url = get_session_proxy(session_id, force_rotate=force_rotate)
         if proxy_url:
             proxies = {"http": proxy_url, "https": proxy_url}
     
     try:
         resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout, proxies=proxies)
         return resp.json()
-    except http_requests.exceptions.Timeout:
-        # Se falhou com proxy, tentar sem
+    except (http_requests.exceptions.Timeout, http_requests.exceptions.ProxyError, 
+            http_requests.exceptions.ConnectionError):
+        # Proxy falhou, tentar sem proxy
         if proxies:
             try:
                 resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
                 return resp.json()
-            except:
-                pass
-        return {"code": -1, "msg": "Timeout", "success": False}
-    except http_requests.exceptions.ProxyError:
-        # Proxy falhou, tentar sem proxy
-        try:
-            resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
-            return resp.json()
-        except Exception as e:
-            return {"code": -1, "msg": f"Proxy error: {str(e)}", "success": False}
+            except Exception as e:
+                return {"code": -1, "msg": str(e), "success": False}
+        return {"code": -1, "msg": "Connection error", "success": False}
     except Exception as e:
         return {"code": -1, "msg": str(e), "success": False}
 
@@ -347,6 +352,8 @@ def adv_click(
     ad_format: str = "reward",
     counter: int = 1,
     country_code: str = DEFAULT_COUNTRY_CODE,
+    session_id: Optional[str] = None,
+    force_rotate: bool = False,
 ) -> dict:
     """Envia recompensa de anúncio (advClick)."""
     ltv = f"{random.uniform(ltv_min, ltv_max):.6f}"
@@ -378,7 +385,7 @@ def adv_click(
         "sign": sign,
     }
     
-    return api_post("/ad/advClick", payload)
+    return api_post("/ad/advClick", payload, session_id=session_id, force_rotate=force_rotate)
 
 
 # =============================================================================
@@ -397,13 +404,16 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         "session_num": session_num,
     }
     
+    gaid_short = gaid[:8] + '...'
+    force_rotate = False  # Só rotaciona IP quando der erro
+    
     for i in range(count):
         if active_sessions.get(session_id, {}).get("status") == "stopped":
             socketio.emit('session_update', {
                 'session_id': session_id,
                 'session_num': session_num,
                 'type': 'stopped',
-                'message': f'Sessão {session_num} parada pelo usuário.',
+                'message': f'Sessão {session_num} ({gaid_short}) parada pelo usuário.',
             })
             break
         
@@ -412,7 +422,12 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             ltv_min=ltv_min,
             ltv_max=ltv_max,
             counter=30 + i,
+            session_id=session_id,
+            force_rotate=force_rotate,
         )
+        
+        # Resetar force_rotate após usar
+        force_rotate = False
         
         active_sessions[session_id]["current"] = i + 1
         
@@ -432,11 +447,10 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 'toa_amount': toa_amount,
                 'total_coins': active_sessions[session_id]["total_coins"],
                 'ad_id': randomize_ad_id(),
-                'message': f'[{i+1}/{count}] +{per_amount} moedas | Saldo: {toa_amount}',
+                'message': f'[{i+1}/{count}] ({gaid_short}) +{per_amount} moedas | Saldo: {toa_amount}',
             })
         else:
             msg = result.get("msg", "Unknown error")
-            gaid_short = gaid[:8] + '...'
             socketio.emit('session_update', {
                 'session_id': session_id,
                 'session_num': session_num,
@@ -446,6 +460,10 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 'gaid_short': gaid_short,
                 'message': f'[{i+1}/{count}] ERRO ({gaid_short}): {msg}',
             })
+            
+            # Rotacionar IP na próxima tentativa quando der erro
+            force_rotate = True
+            
             if "limit" in msg.lower() or "restrict" in msg.lower():
                 socketio.emit('session_update', {
                     'session_id': session_id,
@@ -461,6 +479,9 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
     
     active_sessions[session_id]["status"] = "finished"
     
+    # Limpar proxy da sessão
+    session_proxies.pop(session_id, None)
+    
     # Decrementar sessions_running do GAID
     if gaid in active_gaids:
         active_gaids[gaid]['sessions_running'] = max(0, active_gaids[gaid]['sessions_running'] - 1)
@@ -472,7 +493,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         'type': 'finished',
         'total_coins': active_sessions[session_id]["total_coins"],
         'success_count': active_sessions[session_id]["success_count"],
-        'message': f'Sessão {session_num} finalizada: {active_sessions[session_id]["success_count"]}/{count} sucesso, +{active_sessions[session_id]["total_coins"]} moedas',
+        'message': f'Sessão {session_num} ({gaid_short}) finalizada: {active_sessions[session_id]["success_count"]}/{count} sucesso, +{active_sessions[session_id]["total_coins"]} moedas',
     })
 
 
