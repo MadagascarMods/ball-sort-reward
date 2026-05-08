@@ -6,6 +6,9 @@ ClassicBallSortPuzzle — Web Interface para API de Recompensa (advClick)
 Flask app para hospedar na Render.
 """
 
+from gevent import monkey
+monkey.patch_all()
+
 from __future__ import annotations
 
 import base64
@@ -46,7 +49,7 @@ AD_NETWORKS = ["Unity Ads", "Google AdMob"]
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'ball-sort-secret-key-2025'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # Armazenar sessões ativas
 active_sessions: Dict[str, dict] = {}
@@ -380,4 +383,4 @@ def api_stop_all():
 # =============================================================================
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, log_output=True)
