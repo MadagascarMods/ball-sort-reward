@@ -323,8 +323,8 @@ def get_session_proxy(session_id: str, force_rotate: bool = False) -> Optional[s
 # API FUNCTIONS
 # =============================================================================
 
-def api_post(endpoint: str, payload: dict, timeout: int = 20, session_id: Optional[str] = None, force_rotate: bool = False) -> dict:
-    """Envia POST para a API. Usa proxy sticky por sessão (só troca no erro)."""
+def api_post(endpoint: str, payload: dict, timeout: int = 15, session_id: Optional[str] = None, force_rotate: bool = False) -> dict:
+    """Envia POST para a API. Usa proxy sticky por sessão. Tenta até 3 proxies diferentes antes de usar IP direto."""
     url = BASE_URL + endpoint
     headers = {
         "Accept-Encoding": "identity",
@@ -332,25 +332,38 @@ def api_post(endpoint: str, payload: dict, timeout: int = 20, session_id: Option
         "User-Agent": DEFAULT_USER_AGENT,
     }
     
-    proxies = None
+    # Se tem session_id, usar proxy
     if session_id:
-        proxy_url = get_session_proxy(session_id, force_rotate=force_rotate)
-        if proxy_url:
+        max_proxy_attempts = 3
+        for attempt in range(max_proxy_attempts):
+            proxy_url = get_session_proxy(session_id, force_rotate=(force_rotate or attempt > 0))
+            if not proxy_url:
+                break  # Sem proxies disponíveis, vai direto
+            
             proxies = {"http": proxy_url, "https": proxy_url}
-    
-    try:
-        resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout, proxies=proxies)
-        return resp.json()
-    except (http_requests.exceptions.Timeout, http_requests.exceptions.ProxyError,
-            http_requests.exceptions.ConnectionError):
-        # Proxy falhou, tentar sem proxy como fallback
-        if proxies:
             try:
-                resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
-                return resp.json()
-            except Exception as e:
-                return {"code": -1, "msg": str(e), "success": False}
-        return {"code": -1, "msg": "Connection error", "success": False}
+                resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout, proxies=proxies)
+                result = resp.json()
+                # Se a API respondeu (mesmo com erro lógico), o proxy funcionou
+                return result
+            except (http_requests.exceptions.Timeout, http_requests.exceptions.ProxyError,
+                    http_requests.exceptions.ConnectionError, http_requests.exceptions.ChunkedEncodingError):
+                # Proxy falhou, tentar outro
+                continue
+            except Exception:
+                continue
+        
+        # Todos os proxies falharam - usar IP direto como último recurso
+        try:
+            resp = http_requests.post(url, json=payload, headers=headers, timeout=20)
+            return resp.json()
+        except Exception as e:
+            return {"code": -1, "msg": f"All proxies failed + direct: {str(e)}", "success": False}
+    
+    # Sem session_id (login, saldo) - usar direto
+    try:
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=20)
+        return resp.json()
     except Exception as e:
         return {"code": -1, "msg": str(e), "success": False}
 
