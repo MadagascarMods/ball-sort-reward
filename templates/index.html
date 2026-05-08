@@ -643,7 +643,7 @@
                 <div class="form-group">
                     <label class="form-label">Delay (segundos)</label>
                     <input type="number" id="delay-1" class="form-input" 
-                           value="10" min="1" max="120" step="1">
+                           value="20" min="1" max="120" step="1">
                 </div>
 
                 <div class="form-group">
@@ -721,7 +721,7 @@
                 <div class="form-group">
                     <label class="form-label">Delay (segundos)</label>
                     <input type="number" id="delay-2" class="form-input" 
-                           value="10" min="1" max="120" step="1">
+                           value="20" min="1" max="120" step="1">
                 </div>
 
                 <div class="form-group">
@@ -1049,6 +1049,9 @@
                     break;
                 case 'limit':
                     addLog('warning', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
+                    break;
+                case 'info':
+                    addLog('info', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
                     break;
                 case 'finished':
                     addLog('info', `[Conta ${panel}|S${data.session_num}] ${data.message}`);
