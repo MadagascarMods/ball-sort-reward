@@ -218,11 +218,91 @@ def compute_adv_click_sign(
 
 
 # =============================================================================
+# PROXY / IP DINÂMICO (Sticky por sessão, rotaciona no erro)
+# =============================================================================
+
+# Lista de proxies públicos (atualizada dinamicamente)
+proxy_list: List[str] = []
+proxy_last_update: float = 0
+PROXY_UPDATE_INTERVAL = 300  # Atualizar a cada 5 minutos
+
+
+def fetch_proxy_list() -> List[str]:
+    """Busca lista de proxies HTTP gratuitos de múltiplas fontes."""
+    proxies = []
+    try:
+        resp = http_requests.get(
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            for line in resp.text.strip().split('\n'):
+                line = line.strip()
+                if line and ':' in line:
+                    proxies.append(f"http://{line}")
+    except:
+        pass
+    
+    try:
+        resp = http_requests.get(
+            "https://www.proxy-list.download/api/v1/get?type=http",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            for line in resp.text.strip().split('\n'):
+                line = line.strip()
+                if line and ':' in line:
+                    proxies.append(f"http://{line}")
+    except:
+        pass
+    
+    try:
+        resp = http_requests.get(
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            for line in resp.text.strip().split('\n'):
+                line = line.strip()
+                if line and ':' in line:
+                    proxies.append(f"http://{line}")
+    except:
+        pass
+    
+    return proxies
+
+
+def get_new_proxy() -> Optional[str]:
+    """Retorna um proxy aleatório da lista, atualizando se necessário."""
+    global proxy_list, proxy_last_update
+    
+    now = time.time()
+    if not proxy_list or (now - proxy_last_update) > PROXY_UPDATE_INTERVAL:
+        proxy_list = fetch_proxy_list()
+        proxy_last_update = now
+    
+    if proxy_list:
+        return random.choice(proxy_list)
+    return None
+
+
+# Mapeia session_id -> proxy atual (sticky proxy por sessão)
+session_proxies: Dict[str, Optional[str]] = {}
+
+
+def get_session_proxy(session_id: str, force_rotate: bool = False) -> Optional[str]:
+    """Retorna o proxy fixo da sessão. Só troca se force_rotate=True."""
+    if force_rotate or session_id not in session_proxies:
+        session_proxies[session_id] = get_new_proxy()
+    return session_proxies.get(session_id)
+
+
+# =============================================================================
 # API FUNCTIONS
 # =============================================================================
 
-def api_post(endpoint: str, payload: dict, timeout: int = 20) -> dict:
-    """Envia POST para a API."""
+def api_post(endpoint: str, payload: dict, timeout: int = 20, session_id: Optional[str] = None, force_rotate: bool = False) -> dict:
+    """Envia POST para a API. Usa proxy sticky por sessão (só troca no erro)."""
     url = BASE_URL + endpoint
     headers = {
         "Accept-Encoding": "identity",
@@ -230,13 +310,25 @@ def api_post(endpoint: str, payload: dict, timeout: int = 20) -> dict:
         "User-Agent": DEFAULT_USER_AGENT,
     }
     
+    proxies = None
+    if session_id:
+        proxy_url = get_session_proxy(session_id, force_rotate=force_rotate)
+        if proxy_url:
+            proxies = {"http": proxy_url, "https": proxy_url}
+    
     try:
-        resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout, proxies=proxies)
         return resp.json()
-    except http_requests.exceptions.Timeout:
-        return {"code": -1, "msg": "Timeout", "success": False}
-    except http_requests.exceptions.ConnectionError as e:
-        return {"code": -1, "msg": f"Connection error: {str(e)}", "success": False}
+    except (http_requests.exceptions.Timeout, http_requests.exceptions.ProxyError,
+            http_requests.exceptions.ConnectionError):
+        # Proxy falhou, tentar sem proxy como fallback
+        if proxies:
+            try:
+                resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
+                return resp.json()
+            except Exception as e:
+                return {"code": -1, "msg": str(e), "success": False}
+        return {"code": -1, "msg": "Connection error", "success": False}
     except Exception as e:
         return {"code": -1, "msg": str(e), "success": False}
 
@@ -271,6 +363,8 @@ def adv_click(
     ad_format: str = "reward",
     counter: int = 1,
     country_code: str = DEFAULT_COUNTRY_CODE,
+    session_id: Optional[str] = None,
+    force_rotate: bool = False,
 ) -> dict:
     """Envia recompensa de anúncio (advClick)."""
     ltv = f"{random.uniform(ltv_min, ltv_max):.6f}"
@@ -302,7 +396,7 @@ def adv_click(
         "sign": sign,
     }
     
-    return api_post("/ad/advClick", payload)
+    return api_post("/ad/advClick", payload, session_id=session_id, force_rotate=force_rotate)
 
 
 # =============================================================================
@@ -323,6 +417,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
     
     gaid_short = gaid[:8] + '...'
     consecutive_errors = 0  # Contador de erros consecutivos
+    force_rotate = False  # Só rotaciona proxy quando der erro
     
     for i in range(count):
         if active_sessions.get(session_id, {}).get("status") == "stopped":
@@ -339,7 +434,12 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             ltv_min=ltv_min,
             ltv_max=ltv_max,
             counter=30 + i,
+            session_id=session_id,
+            force_rotate=force_rotate,
         )
+        
+        # Resetar force_rotate após usar
+        force_rotate = False
         
         active_sessions[session_id]["current"] = i + 1
         
@@ -365,6 +465,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         else:
             msg = result.get("msg", "Unknown error")
             consecutive_errors += 1
+            force_rotate = True  # Trocar proxy na próxima tentativa
             
             socketio.emit('session_update', {
                 'session_id': session_id,
@@ -422,6 +523,9 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             time.sleep(delay)
     
     active_sessions[session_id]["status"] = "finished"
+    
+    # Limpar proxy da sessão
+    session_proxies.pop(session_id, None)
     
     # Decrementar sessions_running do GAID
     if gaid in active_gaids:
