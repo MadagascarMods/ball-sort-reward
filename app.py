@@ -522,16 +522,16 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 })
                 break
             
-            # Após 4 erros consecutivos, pausar 3 minutos
+            # Após 4 erros consecutivos, pausar 1 minuto
             if consecutive_errors >= 4:
                 socketio.emit('session_update', {
                     'session_id': session_id,
                     'session_num': session_num,
                     'type': 'warning',
-                    'message': f'({gaid_short}) 4 erros consecutivos! Pausando 3 minutos antes de retomar...',
+                    'message': f'({gaid_short}) 4 erros consecutivos! Pausando 1 minuto antes de retomar...',
                 })
-                # Aguardar 3 minutos (180 segundos)
-                for sec in range(180):
+                # Aguardar 1 minuto (60 segundos)
+                for sec in range(60):
                     if active_sessions.get(session_id, {}).get("status") == "stopped":
                         break
                     time.sleep(1)

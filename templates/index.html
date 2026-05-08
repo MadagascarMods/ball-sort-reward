@@ -1096,6 +1096,54 @@
             }
         });
 
+        // ===== LOCALSTORAGE: Salvar e carregar GAIDs =====
+        function saveGaids() {
+            const gaid1 = document.getElementById('gaid-1').value.trim();
+            const gaid2 = document.getElementById('gaid-2').value.trim();
+            if (gaid1) localStorage.setItem('gaid_1', gaid1);
+            if (gaid2) localStorage.setItem('gaid_2', gaid2);
+            // Salvar também LTV e delay
+            localStorage.setItem('ltv_min_1', document.getElementById('ltv-min-1').value);
+            localStorage.setItem('ltv_max_1', document.getElementById('ltv-max-1').value);
+            localStorage.setItem('delay_1', document.getElementById('delay-1').value);
+            localStorage.setItem('ltv_min_2', document.getElementById('ltv-min-2').value);
+            localStorage.setItem('ltv_max_2', document.getElementById('ltv-max-2').value);
+            localStorage.setItem('delay_2', document.getElementById('delay-2').value);
+        }
+
+        function loadGaids() {
+            const gaid1 = localStorage.getItem('gaid_1');
+            const gaid2 = localStorage.getItem('gaid_2');
+            if (gaid1) document.getElementById('gaid-1').value = gaid1;
+            if (gaid2) document.getElementById('gaid-2').value = gaid2;
+            // Carregar LTV e delay
+            const ltvMin1 = localStorage.getItem('ltv_min_1');
+            const ltvMax1 = localStorage.getItem('ltv_max_1');
+            const delay1 = localStorage.getItem('delay_1');
+            const ltvMin2 = localStorage.getItem('ltv_min_2');
+            const ltvMax2 = localStorage.getItem('ltv_max_2');
+            const delay2 = localStorage.getItem('delay_2');
+            if (ltvMin1) document.getElementById('ltv-min-1').value = ltvMin1;
+            if (ltvMax1) document.getElementById('ltv-max-1').value = ltvMax1;
+            if (delay1) document.getElementById('delay-1').value = delay1;
+            if (ltvMin2) document.getElementById('ltv-min-2').value = ltvMin2;
+            if (ltvMax2) document.getElementById('ltv-max-2').value = ltvMax2;
+            if (delay2) document.getElementById('delay-2').value = delay2;
+        }
+
+        // Carregar GAIDs salvos ao abrir a página
+        loadGaids();
+
+        // Salvar GAIDs quando campos mudam
+        document.getElementById('gaid-1').addEventListener('input', saveGaids);
+        document.getElementById('gaid-2').addEventListener('input', saveGaids);
+        document.getElementById('ltv-min-1').addEventListener('input', saveGaids);
+        document.getElementById('ltv-max-1').addEventListener('input', saveGaids);
+        document.getElementById('delay-1').addEventListener('input', saveGaids);
+        document.getElementById('ltv-min-2').addEventListener('input', saveGaids);
+        document.getElementById('ltv-max-2').addEventListener('input', saveGaids);
+        document.getElementById('delay-2').addEventListener('input', saveGaids);
+
         // Registrar GAIDs quando campos mudam
         document.getElementById('gaid-1').addEventListener('blur', registerGaids);
         document.getElementById('gaid-2').addEventListener('blur', registerGaids);
