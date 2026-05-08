@@ -5,11 +5,10 @@ ClassicBallSortPuzzle — Web Interface para API de Recompensa (advClick)
 =======================================================================
 Flask app para hospedar na Render.
 """
+from __future__ import annotations
 
 from gevent import monkey
 monkey.patch_all()
-
-from __future__ import annotations
 
 import base64
 import hashlib
