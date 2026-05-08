@@ -229,47 +229,69 @@ PROXY_UPDATE_INTERVAL = 300  # Atualizar a cada 5 minutos
 
 def fetch_proxy_list() -> List[str]:
     """Busca lista de proxies HTTP gratuitos de múltiplas fontes."""
-    proxies = []
-    try:
-        resp = http_requests.get(
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
-            timeout=10
-        )
-        if resp.status_code == 200:
-            for line in resp.text.strip().split('\n'):
-                line = line.strip()
-                if line and ':' in line:
-                    proxies.append(f"http://{line}")
-    except:
-        pass
+    proxies = set()  # Usar set para evitar duplicatas
     
-    try:
-        resp = http_requests.get(
-            "https://www.proxy-list.download/api/v1/get?type=http",
-            timeout=10
-        )
-        if resp.status_code == 200:
-            for line in resp.text.strip().split('\n'):
-                line = line.strip()
-                if line and ':' in line:
-                    proxies.append(f"http://{line}")
-    except:
-        pass
+    # Lista de URLs de fontes de proxies gratuitos
+    proxy_sources = [
+        # ProxyScrape
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=yes&anonymity=elite",
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=yes&anonymity=anonymous",
+        # Proxy-List Download
+        "https://www.proxy-list.download/api/v1/get?type=http",
+        "https://www.proxy-list.download/api/v1/get?type=https",
+        # TheSpeedX GitHub
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+        # ShiftyTR GitHub
+        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
+        # monosans GitHub
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        # clarketm GitHub
+        "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+        # sunny9577 GitHub
+        "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt",
+        # roosterkid GitHub
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+        # MuRongPIG GitHub
+        "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+        # prxchk GitHub
+        "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+        # Zaeem20 GitHub
+        "https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/http.txt",
+        "https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/https.txt",
+        # ErcinDedeworken GitHub
+        "https://raw.githubusercontent.com/ErcinDedeworken/proxies/main/proxies/http.txt",
+        # Anonym0usWork1221 GitHub
+        "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+        # officialputuid GitHub
+        "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+        # opsxcq GitHub
+        "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt",
+        # mmpx12 GitHub
+        "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+        "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt",
+        # zloi-user GitHub
+        "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+        # ProxySpace
+        "https://api.openproxylist.xyz/http.txt",
+    ]
     
-    try:
-        resp = http_requests.get(
-            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-            timeout=10
-        )
-        if resp.status_code == 200:
-            for line in resp.text.strip().split('\n'):
-                line = line.strip()
-                if line and ':' in line:
-                    proxies.append(f"http://{line}")
-    except:
-        pass
+    for url in proxy_sources:
+        try:
+            resp = http_requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                for line in resp.text.strip().split('\n'):
+                    line = line.strip()
+                    if line and ':' in line and not line.startswith('#'):
+                        # Validar formato IP:PORT
+                        parts = line.split(':')
+                        if len(parts) == 2 and parts[1].isdigit():
+                            proxies.add(f"http://{line}")
+        except:
+            pass
     
-    return proxies
+    return list(proxies)
 
 
 def get_new_proxy() -> Optional[str]:
