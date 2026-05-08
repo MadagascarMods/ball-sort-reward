@@ -428,6 +428,54 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        /* Online list */
+        .online-list {
+            background: #050505;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .online-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 10px;
+            border-bottom: 1px solid rgba(0, 255, 65, 0.05);
+            font-size: 0.72rem;
+        }
+
+        .online-item:last-child {
+            border-bottom: none;
+        }
+
+        .online-gaid {
+            color: var(--green-primary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .online-status {
+            font-size: 0.65rem;
+            padding: 2px 8px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .online-status.running {
+            background: rgba(0, 255, 65, 0.15);
+            color: var(--green-primary);
+            border: 1px solid var(--green-dark);
+        }
+
+        .online-status.idle {
+            background: rgba(255, 170, 0, 0.1);
+            color: var(--yellow);
+            border: 1px solid rgba(255, 170, 0, 0.3);
+        }
+
         /* Footer */
         .footer {
             text-align: center;
@@ -571,6 +619,32 @@
                 <button class="btn btn-full" onclick="checkBalance()">
                     &#128176; Ver Saldo
                 </button>
+            </div>
+        </div>
+
+        <!-- Monitoramento em Tempo Real -->
+        <div class="card fade-in">
+            <h2 class="card-title">&#128225; Monitoramento em Tempo Real</h2>
+            
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="stat-connections">0</div>
+                    <div class="stat-label">Conexões</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="stat-unique-gaids">0</div>
+                    <div class="stat-label">GAIDs Online</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="stat-gaids-running">0</div>
+                    <div class="stat-label">GAIDs Rodando</div>
+                </div>
+            </div>
+
+            <div class="online-list" id="online-list">
+                <div class="online-item" style="color: var(--text-dim); font-size: 0.7rem; padding: 8px;">
+                    Nenhum GAID online no momento.
+                </div>
             </div>
         </div>
 
@@ -822,11 +896,54 @@
 
         socket.on('connect', function() {
             addLog('info', 'Conectado ao servidor via WebSocket.');
+            // Registrar GAID ao conectar
+            const gaid = document.getElementById('gaid').value.trim();
+            if (gaid) {
+                socket.emit('register_gaid', { gaid: gaid });
+            }
         });
 
         socket.on('disconnect', function() {
             addLog('warning', 'Desconectado do servidor.');
             setStatus(false, 'Desconectado', true);
+        });
+
+        // Monitoramento em tempo real de GAIDs online
+        socket.on('online_stats', function(data) {
+            document.getElementById('stat-connections').textContent = data.total_connections || 0;
+            document.getElementById('stat-unique-gaids').textContent = data.unique_gaids || 0;
+            document.getElementById('stat-gaids-running').textContent = data.gaids_running || 0;
+            
+            // Atualizar lista de GAIDs online
+            const listEl = document.getElementById('online-list');
+            if (data.gaid_list && data.gaid_list.length > 0) {
+                listEl.innerHTML = data.gaid_list.map(item => {
+                    const statusClass = item.sessions > 0 ? 'running' : 'idle';
+                    const statusText = item.sessions > 0 ? `${item.sessions} sess.` : 'idle';
+                    return `<div class="online-item">
+                        <span class="online-gaid">${item.gaid}</span>
+                        <span class="online-status ${statusClass}">${statusText}</span>
+                    </div>`;
+                }).join('');
+            } else {
+                listEl.innerHTML = '<div class="online-item" style="color: var(--text-dim); font-size: 0.7rem;">Nenhum GAID online no momento.</div>';
+            }
+        });
+
+        // Registrar GAID quando o campo mudar
+        document.getElementById('gaid').addEventListener('change', function() {
+            const gaid = this.value.trim();
+            if (gaid) {
+                socket.emit('register_gaid', { gaid: gaid });
+            }
+        });
+
+        // Registrar GAID ao perder foco do campo
+        document.getElementById('gaid').addEventListener('blur', function() {
+            const gaid = this.value.trim();
+            if (gaid) {
+                socket.emit('register_gaid', { gaid: gaid });
+            }
         });
     </script>
 </body>

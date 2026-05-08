@@ -97,6 +97,33 @@ def add_security_headers(response):
 active_sessions: Dict[str, dict] = {}
 
 # =============================================================================
+# TRACKING DE GAIDS EM TEMPO REAL
+# =============================================================================
+
+# Mapeia socket_id -> gaid
+connected_clients: Dict[str, str] = {}
+# Conjunto de GAIDs ativos (com sessões rodando)
+active_gaids: Dict[str, dict] = {}  # gaid -> {"connections": set(), "started_at": datetime, "sessions_running": int}
+
+
+def get_online_stats() -> dict:
+    """Retorna estatísticas de usuários online."""
+    unique_gaids = set(g for g in connected_clients.values() if g)
+    running_gaids = set(g for g, info in active_gaids.items() if info.get('sessions_running', 0) > 0)
+    return {
+        'total_connections': len(connected_clients),
+        'unique_gaids': len(unique_gaids),
+        'gaids_running': len(running_gaids),
+        'gaid_list': [{'gaid': g[:8] + '...', 'gaid_full': g, 'sessions': active_gaids.get(g, {}).get('sessions_running', 0)} for g in unique_gaids],
+    }
+
+
+def broadcast_stats():
+    """Envia estatísticas atualizadas para todos os clientes."""
+    stats = get_online_stats()
+    socketio.emit('online_stats', stats)
+
+# =============================================================================
 # UTILITÁRIOS
 # =============================================================================
 
@@ -342,6 +369,12 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             time.sleep(delay)
     
     active_sessions[session_id]["status"] = "finished"
+    
+    # Decrementar sessions_running do GAID
+    if gaid in active_gaids:
+        active_gaids[gaid]['sessions_running'] = max(0, active_gaids[gaid]['sessions_running'] - 1)
+        broadcast_stats()
+    
     socketio.emit('session_update', {
         'session_id': session_id,
         'session_num': session_num,
@@ -393,6 +426,11 @@ def api_start():
     if sessions > 2:
         sessions = 2
     
+    # Atualizar tracking de GAIDs
+    if gaid not in active_gaids:
+        active_gaids[gaid] = {'connections': set(), 'started_at': datetime.now(), 'sessions_running': 0}
+    active_gaids[gaid]['sessions_running'] += sessions
+    
     session_ids = []
     for s in range(sessions):
         session_id = str(uuid.uuid4())
@@ -404,6 +442,7 @@ def api_start():
         )
         thread.start()
     
+    broadcast_stats()
     return jsonify({"session_ids": session_ids, "message": f"{sessions} sessão(ões) iniciada(s)"})
 
 
@@ -423,6 +462,53 @@ def api_stop_all():
         if active_sessions[sid]["status"] == "running":
             active_sessions[sid]["status"] = "stopped"
     return jsonify({"message": "Todas as sessões marcadas para parar"})
+
+
+@app.route('/api/stats', methods=['GET'])
+def api_stats():
+    """Retorna estatísticas de GAIDs online."""
+    return jsonify(get_online_stats())
+
+
+# =============================================================================
+# SOCKET.IO EVENTS (tracking de conexões)
+# =============================================================================
+
+@socketio.on('connect')
+def handle_connect():
+    """Quando um cliente conecta via WebSocket."""
+    connected_clients[request.sid] = ''
+    broadcast_stats()
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Quando um cliente desconecta."""
+    gaid = connected_clients.pop(request.sid, '')
+    if gaid and gaid in active_gaids:
+        active_gaids[gaid]['connections'].discard(request.sid)
+        if not active_gaids[gaid]['connections']:
+            del active_gaids[gaid]
+    broadcast_stats()
+
+
+@socketio.on('register_gaid')
+def handle_register_gaid(data):
+    """Quando um cliente registra seu GAID."""
+    gaid = data.get('gaid', '').strip()
+    if gaid:
+        old_gaid = connected_clients.get(request.sid, '')
+        # Remover do GAID antigo se mudou
+        if old_gaid and old_gaid != gaid and old_gaid in active_gaids:
+            active_gaids[old_gaid]['connections'].discard(request.sid)
+            if not active_gaids[old_gaid]['connections']:
+                del active_gaids[old_gaid]
+        
+        connected_clients[request.sid] = gaid
+        if gaid not in active_gaids:
+            active_gaids[gaid] = {'connections': set(), 'started_at': datetime.now(), 'sessions_running': 0}
+        active_gaids[gaid]['connections'].add(request.sid)
+        broadcast_stats()
 
 
 # =============================================================================
