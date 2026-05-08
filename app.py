@@ -453,6 +453,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
     gaid_short = gaid[:8] + '...'
     consecutive_errors = 0  # Contador de erros consecutivos
     force_rotate = False  # Só rotaciona proxy quando der erro
+    MAX_RETRIES = 2  # Retries imediatos com novo proxy antes de contar como erro
     
     for i in range(count):
         if active_sessions.get(session_id, {}).get("status") == "stopped":
@@ -464,21 +465,37 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             })
             break
         
-        result = adv_click(
-            gaid=gaid,
-            ltv_min=ltv_min,
-            ltv_max=ltv_max,
-            counter=30 + i,
-            session_id=session_id,
-            force_rotate=force_rotate,
-        )
+        # Tentar com retry imediato (troca proxy e tenta de novo sem esperar)
+        result = None
+        retry_success = False
         
-        # Resetar force_rotate após usar
-        force_rotate = False
+        for attempt in range(MAX_RETRIES + 1):
+            result = adv_click(
+                gaid=gaid,
+                ltv_min=ltv_min,
+                ltv_max=ltv_max,
+                counter=30 + i,
+                session_id=session_id,
+                force_rotate=force_rotate,
+            )
+            force_rotate = False
+            
+            if result.get("code") == 0:
+                retry_success = True
+                break
+            
+            # Se deu "Access too fast" e ainda tem retries, troca IP e tenta imediatamente
+            msg = result.get("msg", "")
+            if "access too fast" in msg.lower() and attempt < MAX_RETRIES:
+                force_rotate = True  # Forçar troca de proxy
+                time.sleep(2)  # Micro-pausa de 2s antes do retry
+                continue
+            else:
+                break  # Outro tipo de erro ou sem retries restantes
         
         active_sessions[session_id]["current"] = i + 1
         
-        if result.get("code") == 0:
+        if retry_success:
             per_amount = result["data"]["perAmout"]
             toa_amount = result["data"]["toaAmout"]
             active_sessions[session_id]["total_coins"] += per_amount
@@ -522,7 +539,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 })
                 break
             
-            # Após 4 erros consecutivos, pausar 1 minuto
+            # Após 4 erros consecutivos (que já falharam nos retries), pausar 1 minuto
             if consecutive_errors >= 4:
                 socketio.emit('session_update', {
                     'session_id': session_id,
@@ -546,6 +563,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                     break
                 
                 consecutive_errors = 0  # Resetar após a pausa
+                force_rotate = True  # Novo proxy após pausa
                 socketio.emit('session_update', {
                     'session_id': session_id,
                     'session_num': session_num,
