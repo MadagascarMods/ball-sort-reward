@@ -218,11 +218,69 @@ def compute_adv_click_sign(
 
 
 # =============================================================================
+# PROXY / IP DINÂMICO
+# =============================================================================
+
+# Lista de proxies públicos (atualizada dinamicamente)
+proxy_list: List[str] = []
+proxy_last_update: float = 0
+PROXY_UPDATE_INTERVAL = 300  # Atualizar a cada 5 minutos
+
+
+def fetch_proxy_list() -> List[str]:
+    """Busca lista de proxies HTTP gratuitos."""
+    proxies = []
+    try:
+        # Fonte 1: ProxyScrape
+        resp = http_requests.get(
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            for line in resp.text.strip().split('\n'):
+                line = line.strip()
+                if line and ':' in line:
+                    proxies.append(f"http://{line}")
+    except:
+        pass
+    
+    try:
+        # Fonte 2: Free Proxy List API
+        resp = http_requests.get(
+            "https://www.proxy-list.download/api/v1/get?type=http",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            for line in resp.text.strip().split('\n'):
+                line = line.strip()
+                if line and ':' in line:
+                    proxies.append(f"http://{line}")
+    except:
+        pass
+    
+    return proxies
+
+
+def get_proxy() -> Optional[str]:
+    """Retorna um proxy aleatório da lista, atualizando se necessário."""
+    global proxy_list, proxy_last_update
+    
+    now = time.time()
+    if not proxy_list or (now - proxy_last_update) > PROXY_UPDATE_INTERVAL:
+        proxy_list = fetch_proxy_list()
+        proxy_last_update = now
+    
+    if proxy_list:
+        return random.choice(proxy_list)
+    return None
+
+
+# =============================================================================
 # API FUNCTIONS
 # =============================================================================
 
-def api_post(endpoint: str, payload: dict, timeout: int = 20) -> dict:
-    """Envia POST para a API e retorna a resposta JSON."""
+def api_post(endpoint: str, payload: dict, timeout: int = 20, use_proxy: bool = True) -> dict:
+    """Envia POST para a API e retorna a resposta JSON. Usa proxy dinâmico."""
     url = BASE_URL + endpoint
     headers = {
         "Accept-Encoding": "identity",
@@ -230,11 +288,31 @@ def api_post(endpoint: str, payload: dict, timeout: int = 20) -> dict:
         "User-Agent": DEFAULT_USER_AGENT,
     }
     
+    proxies = None
+    if use_proxy:
+        proxy_url = get_proxy()
+        if proxy_url:
+            proxies = {"http": proxy_url, "https": proxy_url}
+    
     try:
-        resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout, proxies=proxies)
         return resp.json()
     except http_requests.exceptions.Timeout:
+        # Se falhou com proxy, tentar sem
+        if proxies:
+            try:
+                resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
+                return resp.json()
+            except:
+                pass
         return {"code": -1, "msg": "Timeout", "success": False}
+    except http_requests.exceptions.ProxyError:
+        # Proxy falhou, tentar sem proxy
+        try:
+            resp = http_requests.post(url, json=payload, headers=headers, timeout=timeout)
+            return resp.json()
+        except Exception as e:
+            return {"code": -1, "msg": f"Proxy error: {str(e)}", "success": False}
     except Exception as e:
         return {"code": -1, "msg": str(e), "success": False}
 
@@ -377,18 +455,6 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                     'message': f'Limite atingido para GAID {gaid_short}. Sessão encerrada.',
                 })
                 break
-            
-            # Se "Access too fast", aplicar backoff extra
-            if "access too fast" in msg.lower() or "too fast" in msg.lower():
-                backoff = delay * 2 if delay > 0 else 15
-                socketio.emit('session_update', {
-                    'session_id': session_id,
-                    'session_num': session_num,
-                    'type': 'warning',
-                    'message': f'GAID {gaid_short}: Requisições muito rápidas! Aguardando {backoff:.0f}s antes de tentar novamente...',
-                })
-                time.sleep(backoff)
-                continue
         
         if i < count - 1 and delay > 0:
             time.sleep(delay)
