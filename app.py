@@ -102,15 +102,35 @@ active_sessions: Dict[str, dict] = {}
 
 # Cache global do LTV real obtido via startCheck
 auto_ltv_cache: Dict[str, dict] = {}  # gaid -> {"adLimitCoinNum": float, "updated_at": float}
-AUTO_LTV_CACHE_TTL = 300  # Atualizar cache a cada 5 minutos
+AUTO_LTV_CACHE_TTL = 300  # Cache geral para consultas fora da sessão
+
+# Revalidação defensiva dentro da sessão.
+# Não usar 1 segundo: isso aumenta muito o volume de startCheck e pode virar outro sinal de automação.
+AUTO_LTV_SESSION_REFRESH_INTERVAL = 30  # Revalidar no máximo a cada 30 segundos durante sessão ativa
+
+# Limites server-side defensivos. A interface sozinha não basta porque o JSON pode ser alterado.
+MAX_REWARDS_PER_SESSION = 100
+MIN_REWARD_DELAY_SECONDS = 10.0
+MAX_SIMULTANEOUS_SESSIONS = 1
+
+TERMINAL_ACCOUNT_ERROR_KEYWORDS = (
+    "bloqueada", "bloqueado", "blocked",
+    "invalid", "invalida", "inválida",
+    "ban", "banned", "restrict", "restricted",
+    "access too fast",
+)
 
 
-def get_real_ltv(gaid: str, country_code: str = DEFAULT_COUNTRY_CODE) -> Optional[float]:
-    """Obtém o LTV real do app via startCheck. Usa cache para evitar requests excessivos."""
+def get_real_ltv(gaid: str, country_code: str = DEFAULT_COUNTRY_CODE, force_refresh: bool = False) -> Optional[float]:
+    """Obtém o LTV real do app via startCheck.
+
+    Por padrão usa cache para evitar excesso de chamadas. Durante uma sessão ativa,
+    force_refresh=True pode ser usado em baixa frequência para revalidar o LTV.
+    """
     now = time.time()
     
-    # Verificar cache
-    if gaid in auto_ltv_cache:
+    # Verificar cache, exceto quando a sessão pede revalidação explícita
+    if not force_refresh and gaid in auto_ltv_cache:
         cached = auto_ltv_cache[gaid]
         if (now - cached['updated_at']) < AUTO_LTV_CACHE_TTL:
             return cached['adLimitCoinNum']
@@ -150,6 +170,12 @@ def calculate_auto_ltv_range(real_ltv: float) -> tuple:
     ltv_min = real_ltv * 0.80
     ltv_max = real_ltv * 1.00
     return (ltv_min, ltv_max)
+
+
+def is_terminal_account_error(msg: str) -> bool:
+    """Identifica respostas nas quais a sessão deve parar imediatamente."""
+    normalized = (msg or "").lower()
+    return any(keyword in normalized for keyword in TERMINAL_ACCOUNT_ERROR_KEYWORDS)
 
 # =============================================================================
 # TRACKING DE GAIDS EM TEMPO REAL
@@ -515,7 +541,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
     gaid_short = gaid[:8] + '...'
     consecutive_errors = 0  # Contador de erros consecutivos
     force_rotate = False  # Só rotaciona proxy quando der erro
-    MAX_RETRIES = 2  # Retries imediatos com novo proxy antes de contar como erro
+    MAX_RETRIES = 0  # Defensivo: não insistir imediatamente em rate-limit/erro
     
     for i in range(count):
         if active_sessions.get(session_id, {}).get("status") == "stopped":
@@ -527,9 +553,11 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             })
             break
         
-        # Auto LTV: Atualizar LTV real a cada 5 minutos durante a sessão
-        if auto_ltv and (time.time() - last_ltv_refresh) > AUTO_LTV_CACHE_TTL:
-            refreshed_ltv = get_real_ltv(gaid)
+        # Auto LTV defensivo: revalidar em baixa frequência e parar se não conseguir confirmar.
+        # Verificar a cada 1s aumentaria muito o volume de startCheck e pode piorar a marcação.
+        if auto_ltv and (time.time() - last_ltv_refresh) > AUTO_LTV_SESSION_REFRESH_INTERVAL:
+            refreshed_ltv = get_real_ltv(gaid, force_refresh=True)
+            last_ltv_refresh = time.time()
             if refreshed_ltv:
                 new_min, new_max = calculate_auto_ltv_range(refreshed_ltv)
                 if new_min != current_ltv_min or new_max != current_ltv_max:
@@ -540,9 +568,16 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                         'session_id': session_id,
                         'session_num': session_num,
                         'type': 'info',
-                        'message': f'({gaid_short}) Auto LTV atualizado! Novo valor: {refreshed_ltv} | Range: {current_ltv_min:.6f} - {current_ltv_max:.6f}',
+                        'message': f'({gaid_short}) Auto LTV revalidado. Novo valor: {refreshed_ltv} | Range: {current_ltv_min:.6f} - {current_ltv_max:.6f}',
                     })
-                last_ltv_refresh = time.time()
+            else:
+                socketio.emit('session_update', {
+                    'session_id': session_id,
+                    'session_num': session_num,
+                    'type': 'warning',
+                    'message': f'({gaid_short}) Não foi possível revalidar o LTV. Sessão encerrada por segurança para não usar valor obsoleto.',
+                })
+                break
         
         # Tentar com retry imediato (troca proxy e tenta de novo sem esperar)
         result = None
@@ -563,14 +598,9 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 retry_success = True
                 break
             
-            # Se deu "Access too fast" e ainda tem retries, troca IP e tenta imediatamente
+            # Defensivo: não tentar contornar rate-limit com retry imediato/troca rápida de IP.
             msg = result.get("msg", "")
-            if "access too fast" in msg.lower() and attempt < MAX_RETRIES:
-                force_rotate = True  # Forçar troca de proxy
-                time.sleep(2)  # Micro-pausa de 2s antes do retry
-                continue
-            else:
-                break  # Outro tipo de erro ou sem retries restantes
+            break
         
         active_sessions[session_id]["current"] = i + 1
         
@@ -596,7 +626,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         else:
             msg = result.get("msg", "Unknown error")
             consecutive_errors += 1
-            force_rotate = True  # Trocar proxy na próxima tentativa
+            force_rotate = False  # Defensivo: não trocar proxy para insistir após erro/rate-limit
             
             socketio.emit('session_update', {
                 'session_id': session_id,
@@ -608,14 +638,15 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                 'message': f'[{i+1}/{count}] ERRO ({gaid_short}): {msg}',
             })
             
-            if "limit" in msg.lower() or "restrict" in msg.lower():
+            if is_terminal_account_error(msg) or "limit" in msg.lower():
                 socketio.emit('session_update', {
                     'session_id': session_id,
                     'session_num': session_num,
                     'type': 'limit',
                     'gaid_short': gaid_short,
-                    'message': f'Limite atingido para GAID {gaid_short}. Sessão encerrada.',
+                    'message': f'Erro terminal/limite para GAID {gaid_short}: {msg}. Sessão encerrada sem novas tentativas.',
                 })
+                active_sessions[session_id]["status"] = "stopped"
                 break
             
             # Após 4 erros consecutivos (que já falharam nos retries), pausar 1 minuto
@@ -642,7 +673,7 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
                     break
                 
                 consecutive_errors = 0  # Resetar após a pausa
-                force_rotate = True  # Novo proxy após pausa
+                force_rotate = False  # Defensivo: não trocar proxy para retomar após erro
                 socketio.emit('session_update', {
                     'session_id': session_id,
                     'session_num': session_num,
@@ -654,7 +685,9 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         if i < count - 1 and delay > 0:
             time.sleep(delay)
     
-    active_sessions[session_id]["status"] = "finished"
+    was_stopped = active_sessions.get(session_id, {}).get("status") == "stopped"
+    if not was_stopped:
+        active_sessions[session_id]["status"] = "finished"
     
     # Limpar proxy da sessão
     session_proxies.pop(session_id, None)
@@ -667,10 +700,10 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
     socketio.emit('session_update', {
         'session_id': session_id,
         'session_num': session_num,
-        'type': 'finished',
+        'type': 'stopped' if was_stopped else 'finished',
         'total_coins': active_sessions[session_id]["total_coins"],
         'success_count': active_sessions[session_id]["success_count"],
-        'message': f'Sessão {session_num} ({gaid_short}) finalizada: {active_sessions[session_id]["success_count"]}/{count} sucesso, +{active_sessions[session_id]["total_coins"]} moedas',
+        'message': f'Sessão {session_num} ({gaid_short}) {"interrompida" if was_stopped else "finalizada"}: {active_sessions[session_id]["success_count"]}/{count} sucesso, +{active_sessions[session_id]["total_coins"]} moedas',
     })
 
 
@@ -742,9 +775,9 @@ def api_start():
     gaid = data.get('gaid', '')
     ltv_min = float(data.get('ltv_min', 0.00120))
     ltv_max = float(data.get('ltv_max', 0.00230))
-    count = int(data.get('count', 50))
-    delay = float(data.get('delay', 20.0))
-    sessions = int(data.get('sessions', 1))
+    count = min(int(data.get('count', 50)), MAX_REWARDS_PER_SESSION)
+    delay = max(float(data.get('delay', 20.0)), MIN_REWARD_DELAY_SECONDS)
+    sessions = min(int(data.get('sessions', 1)), MAX_SIMULTANEOUS_SESSIONS)
     auto_ltv = data.get('auto_ltv', False)  # Novo: modo automático de LTV
     
     if not gaid:
@@ -763,9 +796,6 @@ def api_start():
             })
         else:
             return jsonify({"error": "Não foi possível obter o LTV real. Tente novamente ou use modo manual."}), 500
-    
-    if sessions > 2:
-        sessions = 2
     
     # Atualizar tracking de GAIDs
     if gaid not in active_gaids:
