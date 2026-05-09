@@ -97,6 +97,61 @@ def add_security_headers(response):
 active_sessions: Dict[str, dict] = {}
 
 # =============================================================================
+# AUTO LTV - Cache do LTV real do app
+# =============================================================================
+
+# Cache global do LTV real obtido via startCheck
+auto_ltv_cache: Dict[str, dict] = {}  # gaid -> {"adLimitCoinNum": float, "updated_at": float}
+AUTO_LTV_CACHE_TTL = 300  # Atualizar cache a cada 5 minutos
+
+
+def get_real_ltv(gaid: str, country_code: str = DEFAULT_COUNTRY_CODE) -> Optional[float]:
+    """Obtém o LTV real do app via startCheck. Usa cache para evitar requests excessivos."""
+    now = time.time()
+    
+    # Verificar cache
+    if gaid in auto_ltv_cache:
+        cached = auto_ltv_cache[gaid]
+        if (now - cached['updated_at']) < AUTO_LTV_CACHE_TTL:
+            return cached['adLimitCoinNum']
+    
+    # Fazer startCheck para obter o LTV real
+    try:
+        result = start_check(gaid, country_code)
+        if result.get('code') == 0:
+            ad_data = result.get('data', {}).get('ad', {})
+            limit_coin = ad_data.get('adLimitCoinNum')
+            if limit_coin:
+                ltv_value = float(limit_coin)
+                auto_ltv_cache[gaid] = {
+                    'adLimitCoinNum': ltv_value,
+                    'updated_at': now,
+                    'raw_response': ad_data,
+                }
+                return ltv_value
+    except Exception:
+        pass
+    
+    # Se falhou e tem cache antigo, usar mesmo assim
+    if gaid in auto_ltv_cache:
+        return auto_ltv_cache[gaid]['adLimitCoinNum']
+    
+    return None
+
+
+def calculate_auto_ltv_range(real_ltv: float) -> tuple:
+    """Calcula o range de LTV baseado no valor real do app.
+    Respeita o LTV real para evitar bloqueios:
+    - Min: ~80% do valor real (variação natural entre impressões)
+    - Max: ~100% do valor real (NUNCA ultrapassa o limite do app)
+    Isso simula o comportamento real do app, onde cada impressão
+    tem um valor ligeiramente diferente mas sempre dentro do limite.
+    """
+    ltv_min = real_ltv * 0.80
+    ltv_max = real_ltv * 1.00
+    return (ltv_min, ltv_max)
+
+# =============================================================================
 # TRACKING DE GAIDS EM TEMPO REAL
 # =============================================================================
 
@@ -439,7 +494,7 @@ def adv_click(
 # =============================================================================
 
 def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: float, 
-                       count: int, delay: float, session_num: int):
+                       count: int, delay: float, session_num: int, auto_ltv: bool = False):
     """Executa uma sessão de rewards em background."""
     active_sessions[session_id] = {
         "status": "running",
@@ -448,7 +503,14 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         "current": 0,
         "total": count,
         "session_num": session_num,
+        "auto_ltv": auto_ltv,
+        "current_real_ltv": None,
     }
+    
+    # Variáveis locais para LTV (podem ser atualizadas durante a sessão)
+    current_ltv_min = ltv_min
+    current_ltv_max = ltv_max
+    last_ltv_refresh = time.time()
     
     gaid_short = gaid[:8] + '...'
     consecutive_errors = 0  # Contador de erros consecutivos
@@ -465,6 +527,23 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
             })
             break
         
+        # Auto LTV: Atualizar LTV real a cada 5 minutos durante a sessão
+        if auto_ltv and (time.time() - last_ltv_refresh) > AUTO_LTV_CACHE_TTL:
+            refreshed_ltv = get_real_ltv(gaid)
+            if refreshed_ltv:
+                new_min, new_max = calculate_auto_ltv_range(refreshed_ltv)
+                if new_min != current_ltv_min or new_max != current_ltv_max:
+                    current_ltv_min = new_min
+                    current_ltv_max = new_max
+                    active_sessions[session_id]["current_real_ltv"] = refreshed_ltv
+                    socketio.emit('session_update', {
+                        'session_id': session_id,
+                        'session_num': session_num,
+                        'type': 'info',
+                        'message': f'({gaid_short}) Auto LTV atualizado! Novo valor: {refreshed_ltv} | Range: {current_ltv_min:.6f} - {current_ltv_max:.6f}',
+                    })
+                last_ltv_refresh = time.time()
+        
         # Tentar com retry imediato (troca proxy e tenta de novo sem esperar)
         result = None
         retry_success = False
@@ -472,8 +551,8 @@ def run_reward_session(session_id: str, gaid: str, ltv_min: float, ltv_max: floa
         for attempt in range(MAX_RETRIES + 1):
             result = adv_click(
                 gaid=gaid,
-                ltv_min=ltv_min,
-                ltv_max=ltv_max,
+                ltv_min=current_ltv_min,
+                ltv_max=current_ltv_max,
                 counter=30 + i,
                 session_id=session_id,
                 force_rotate=force_rotate,
@@ -617,7 +696,44 @@ def api_login():
         return jsonify({"error": "GAID é obrigatório"}), 400
     
     result = start_check(gaid)
+    
+    # Atualizar cache do LTV real ao fazer login
+    if result.get('code') == 0:
+        ad_data = result.get('data', {}).get('ad', {})
+        limit_coin = ad_data.get('adLimitCoinNum')
+        if limit_coin:
+            auto_ltv_cache[gaid] = {
+                'adLimitCoinNum': float(limit_coin),
+                'updated_at': time.time(),
+                'raw_response': ad_data,
+            }
+    
     return jsonify(result)
+
+
+@app.route('/api/get_real_ltv', methods=['POST'])
+def api_get_real_ltv():
+    """Endpoint para obter o LTV real atual do app para um GAID."""
+    data = request.json
+    gaid = data.get('gaid', '')
+    if not gaid:
+        return jsonify({"error": "GAID é obrigatório"}), 400
+    
+    real_ltv = get_real_ltv(gaid)
+    if real_ltv is None:
+        return jsonify({"error": "Não foi possível obter o LTV real"}), 500
+    
+    ltv_min, ltv_max = calculate_auto_ltv_range(real_ltv)
+    cached = auto_ltv_cache.get(gaid, {})
+    
+    return jsonify({
+        "real_ltv": real_ltv,
+        "suggested_min": round(ltv_min, 6),
+        "suggested_max": round(ltv_max, 6),
+        "ad_limit_click_count": cached.get('raw_response', {}).get('adLimitClickCount', '?'),
+        "cached_at": cached.get('updated_at', 0),
+        "message": f"LTV real do app: {real_ltv} | Range sugerido: {ltv_min:.6f} - {ltv_max:.6f}"
+    })
 
 
 @app.route('/api/start', methods=['POST'])
@@ -629,9 +745,24 @@ def api_start():
     count = int(data.get('count', 50))
     delay = float(data.get('delay', 20.0))
     sessions = int(data.get('sessions', 1))
+    auto_ltv = data.get('auto_ltv', False)  # Novo: modo automático de LTV
     
     if not gaid:
         return jsonify({"error": "GAID é obrigatório"}), 400
+    
+    # Se auto_ltv está ativo, buscar LTV real do app
+    if auto_ltv:
+        real_ltv = get_real_ltv(gaid)
+        if real_ltv:
+            ltv_min, ltv_max = calculate_auto_ltv_range(real_ltv)
+            socketio.emit('session_update', {
+                'session_id': 'system',
+                'session_num': 0,
+                'type': 'info',
+                'message': f'Auto LTV ativado! LTV real do app: {real_ltv} | Usando range: {ltv_min:.6f} - {ltv_max:.6f}',
+            })
+        else:
+            return jsonify({"error": "Não foi possível obter o LTV real. Tente novamente ou use modo manual."}), 500
     
     if sessions > 2:
         sessions = 2
@@ -647,13 +778,14 @@ def api_start():
         session_ids.append(session_id)
         thread = threading.Thread(
             target=run_reward_session,
-            args=(session_id, gaid, ltv_min, ltv_max, count, delay, s + 1),
+            args=(session_id, gaid, ltv_min, ltv_max, count, delay, s + 1, auto_ltv),
             daemon=True,
         )
         thread.start()
     
     broadcast_stats()
-    return jsonify({"session_ids": session_ids, "message": f"{sessions} sessão(ões) iniciada(s)"})
+    ltv_info = f" (Auto LTV: {ltv_min:.6f} - {ltv_max:.6f})" if auto_ltv else ""
+    return jsonify({"session_ids": session_ids, "message": f"{sessions} sessão(ões) iniciada(s){ltv_info}", "auto_ltv": auto_ltv, "ltv_min": ltv_min, "ltv_max": ltv_max})
 
 
 @app.route('/api/stop', methods=['POST'])

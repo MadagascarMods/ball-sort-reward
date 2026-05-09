@@ -526,6 +526,125 @@
             border: 1px solid rgba(255, 170, 0, 0.3);
         }
 
+        /* Auto LTV Toggle */
+        .auto-ltv-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 255, 65, 0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 42px;
+            height: 22px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 22px;
+            transition: 0.3s;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: '';
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: var(--text-dim);
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background-color: rgba(0, 255, 65, 0.2);
+            border-color: var(--green-primary);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+            background-color: var(--green-primary);
+            box-shadow: 0 0 8px var(--green-glow);
+        }
+
+        .toggle-label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            letter-spacing: 1px;
+            flex: 1;
+        }
+
+        .toggle-label.active {
+            color: var(--green-primary);
+        }
+
+        .btn-mini {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-dim);
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .btn-mini:hover {
+            border-color: var(--green-primary);
+            color: var(--green-primary);
+            box-shadow: 0 0 8px var(--green-glow);
+        }
+
+        .auto-ltv-info {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 255, 65, 0.08);
+            border: 1px solid var(--green-dark);
+            border-radius: 4px;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        .ltv-badge {
+            font-size: 0.75rem;
+            color: var(--green-mid);
+            letter-spacing: 1px;
+        }
+
+        .ltv-badge strong {
+            color: var(--green-primary);
+            font-size: 0.85rem;
+        }
+
+        .range-group.disabled {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+
         /* Hidden panel */
         .panel-hidden {
             display: none;
@@ -620,7 +739,18 @@
 
                 <div class="form-group">
                     <label class="form-label">LTV Range</label>
-                    <div class="range-group">
+                    <div class="auto-ltv-toggle">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto_ltv-1" onchange="toggleAutoLtv(1)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label" id="auto_ltv_label-1">Auto LTV (desativado)</span>
+                        <button class="btn-mini" onclick="refreshRealLtv(1)" title="Atualizar LTV real">&#8635;</button>
+                    </div>
+                    <div class="auto-ltv-info" id="auto_ltv_info-1" style="display:none;">
+                        <span class="ltv-badge">LTV Real: <strong id="real_ltv_value-1">--</strong></span>
+                    </div>
+                    <div class="range-group" id="ltv_range_group-1">
                         <div>
                             <input type="number" id="ltv_min-1" class="form-input" 
                                    value="0.00120" step="0.00001" min="0.00001" max="1.0">
@@ -698,7 +828,18 @@
 
                 <div class="form-group">
                     <label class="form-label">LTV Range</label>
-                    <div class="range-group">
+                    <div class="auto-ltv-toggle">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto_ltv-2" onchange="toggleAutoLtv(2)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label" id="auto_ltv_label-2">Auto LTV (desativado)</span>
+                        <button class="btn-mini" onclick="refreshRealLtv(2)" title="Atualizar LTV real">&#8635;</button>
+                    </div>
+                    <div class="auto-ltv-info" id="auto_ltv_info-2" style="display:none;">
+                        <span class="ltv-badge">LTV Real: <strong id="real_ltv_value-2">--</strong></span>
+                    </div>
+                    <div class="range-group" id="ltv_range_group-2">
                         <div>
                             <input type="number" id="ltv_min-2" class="form-input" 
                                    value="0.00120" step="0.00001" min="0.00001" max="1.0">
@@ -834,10 +975,67 @@
         
         // State per panel
         let panelState = {
-            1: { sessions: 1, totalCoins: 0, totalSuccess: 0, sessionIds: [] },
-            2: { sessions: 1, totalCoins: 0, totalSuccess: 0, sessionIds: [] }
+            1: { sessions: 1, totalCoins: 0, totalSuccess: 0, sessionIds: [], autoLtv: false, realLtv: null },
+            2: { sessions: 1, totalCoins: 0, totalSuccess: 0, sessionIds: [], autoLtv: false, realLtv: null }
         };
         let currentMode = 'single';
+
+        // === AUTO LTV FUNCTIONS ===
+        function toggleAutoLtv(panel) {
+            const checkbox = document.getElementById(`auto_ltv-${panel}`);
+            const label = document.getElementById(`auto_ltv_label-${panel}`);
+            const info = document.getElementById(`auto_ltv_info-${panel}`);
+            const rangeGroup = document.getElementById(`ltv_range_group-${panel}`);
+            
+            panelState[panel].autoLtv = checkbox.checked;
+            
+            if (checkbox.checked) {
+                label.textContent = 'Auto LTV (ativado)';
+                label.classList.add('active');
+                info.style.display = 'block';
+                rangeGroup.classList.add('disabled');
+                addLog('info', `[Conta ${panel}] Auto LTV ativado! Buscando LTV real do app...`);
+                refreshRealLtv(panel);
+            } else {
+                label.textContent = 'Auto LTV (desativado)';
+                label.classList.remove('active');
+                info.style.display = 'none';
+                rangeGroup.classList.remove('disabled');
+                addLog('info', `[Conta ${panel}] Auto LTV desativado. Usando valores manuais.`);
+            }
+        }
+
+        async function refreshRealLtv(panel) {
+            const gaid = document.getElementById(`gaid-${panel}`).value.trim();
+            if (!gaid) {
+                addLog('error', `[Conta ${panel}] Insira o GAID primeiro para buscar o LTV real.`);
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/get_real_ltv', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ gaid })
+                });
+                const data = await resp.json();
+                
+                if (data.real_ltv) {
+                    panelState[panel].realLtv = data.real_ltv;
+                    document.getElementById(`real_ltv_value-${panel}`).textContent = data.real_ltv;
+                    
+                    // Atualizar campos de LTV com valores sugeridos
+                    document.getElementById(`ltv_min-${panel}`).value = data.suggested_min.toFixed(6);
+                    document.getElementById(`ltv_max-${panel}`).value = data.suggested_max.toFixed(6);
+                    
+                    addLog('success', `[Conta ${panel}] LTV Real: ${data.real_ltv} | Range auto: ${data.suggested_min.toFixed(6)} - ${data.suggested_max.toFixed(6)}`);
+                } else {
+                    addLog('error', `[Conta ${panel}] ${data.error || 'Erro ao buscar LTV real'}`);
+                }
+            } catch (e) {
+                addLog('error', `[Conta ${panel}] Erro de conex\u00e3o ao buscar LTV: ${e.message}`);
+            }
+        }
 
         function setMode(mode) {
             currentMode = mode;
@@ -909,12 +1107,14 @@
             const count = parseInt(document.getElementById(`count-${panel}`).value);
             const delay = parseFloat(document.getElementById(`delay-${panel}`).value);
             const sessions = panelState[panel].sessions;
+            const auto_ltv = panelState[panel].autoLtv;
 
             if (!gaid) {
                 addLog('error', `[Conta ${panel}] GAID \u00e9 obrigat\u00f3rio!`);
                 return;
             }
-            if (ltv_min >= ltv_max) {
+            // S\u00f3 validar LTV manual se auto_ltv estiver desativado
+            if (!auto_ltv && ltv_min >= ltv_max) {
                 addLog('error', `[Conta ${panel}] LTV Min deve ser menor que LTV Max!`);
                 return;
             }
@@ -926,18 +1126,25 @@
 
             setStatus(panel, true, `Executando ${sessions} sess\u00e3o(\u00f5es)...`);
             addLog('info', `[Conta ${panel}] Iniciando ${sessions} sess\u00e3o(\u00f5es) | GAID: ${gaid.substring(0, 8)}...`);
-            addLog('info', `[Conta ${panel}] LTV: ${ltv_min} - ${ltv_max} | Count: ${count} | Delay: ${delay}s`);
+            if (auto_ltv) {
+                addLog('info', `[Conta ${panel}] Modo: AUTO LTV | Count: ${count} | Delay: ${delay}s`);
+            } else {
+                addLog('info', `[Conta ${panel}] LTV: ${ltv_min} - ${ltv_max} | Count: ${count} | Delay: ${delay}s`);
+            }
 
             try {
                 const resp = await fetch('/api/start', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ gaid, ltv_min, ltv_max, count, delay, sessions, panel })
+                    body: JSON.stringify({ gaid, ltv_min, ltv_max, count, delay, sessions, panel, auto_ltv })
                 });
                 const data = await resp.json();
                 if (data.session_ids) {
                     panelState[panel].sessionIds = data.session_ids;
                     addLog('success', `[Conta ${panel}] ${data.message}`);
+                    if (data.auto_ltv) {
+                        addLog('success', `[Conta ${panel}] Auto LTV aplicado: ${data.ltv_min?.toFixed(6)} - ${data.ltv_max?.toFixed(6)}`);
+                    }
                     registerGaids();
                 } else {
                     addLog('error', `[Conta ${panel}] ${data.error || 'Erro desconhecido'}`);
@@ -987,6 +1194,19 @@
                     addLog('success', `[Conta ${panel}] Login OK! userId: ${d.userId}`);
                     addLog('success', `[Conta ${panel}] Saldo: ${d.toaAmout} moedas | Pa\u00eds: ${d.countryCode}`);
                     document.getElementById(`stat-balance-${panel}`).textContent = d.toaAmout || '0';
+                    
+                    // Mostrar LTV real do app no login
+                    if (d.ad && d.ad.adLimitCoinNum) {
+                        const realLtv = parseFloat(d.ad.adLimitCoinNum);
+                        addLog('info', `[Conta ${panel}] LTV Real do App: ${realLtv} | Limite clicks: ${d.ad.adLimitClickCount}`);
+                        document.getElementById(`real_ltv_value-${panel}`).textContent = realLtv;
+                        panelState[panel].realLtv = realLtv;
+                        
+                        // Se auto_ltv est\u00e1 ativo, atualizar range automaticamente
+                        if (panelState[panel].autoLtv) {
+                            refreshRealLtv(panel);
+                        }
+                    }
                     registerGaids();
                 } else {
                     addLog('error', `[Conta ${panel}] Erro: ${data.msg || 'Falha no login'}`);
